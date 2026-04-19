@@ -23,7 +23,7 @@ const FEATURES = [
   { icon: '🧠', text: 'AI synthesis — no hallucinations' },
   { icon: '📍', text: 'Location-aware trial filtering' },
   { icon: '📋', text: 'Structured, source-backed answers' },
-  { icon: '🎙️', text: 'Voice mode in 22 languages' },
+  { icon: '📤', text: 'Export as .txt or .json for your doctor' },
 ]
 
 // Animated floating orbs

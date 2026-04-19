@@ -38,12 +38,11 @@ const TICKER_ITEMS = [
   '🔬 500K+ active clinical trials tracked',
   '🤖 AI synthesis in < 5 seconds',
   '📊 Real-time PubMed · OpenAlex · ClinicalTrials data',
-  '🌍 22 Indian languages supported',
   '🏥 4.9★ rated by physicians & patients',
   '⚡ Streaming responses — no waiting',
   '💊 Drug interactions · BMI · Sleep · BP calculators',
-  '🎙️ Voice mode in English and regional languages',
   '🛡️ Every response is source-backed — zero hallucinations',
+  '📋 Structured: Overview → Research → Trials → Takeaways',
 ]
 function TickerStrip() {
   const full = [...TICKER_ITEMS, ...TICKER_ITEMS]
@@ -76,12 +75,12 @@ const DEMO_QUERIES = [
 const FEATURES = [
   { icon: '🔬', title: 'Real Research', desc: 'Live data from PubMed, OpenAlex & ClinicalTrials.gov — 200M+ papers indexed', color: '#7c6dfa' },
   { icon: '🧠', title: 'AI Reasoning', desc: 'Open-source LLM synthesizes evidence into personalized, cited answers with streaming', color: '#22d3ee' },
-  { icon: '🎙️', title: 'Voice Mode', desc: 'Ask questions hands-free in English & 22 Indian languages — hear answers aloud', color: '#34d399' },
   { icon: '📍', title: 'Context-Aware', desc: 'Remembers your disease, name & location across the full multi-turn conversation', color: '#fb7185' },
   { icon: '⚡', title: 'Smart Ranking', desc: 'Retrieves 50–300 results, ranks by relevance, recency, citations & disease match', color: '#fbbf24' },
   { icon: '🛡️', title: 'Source-Backed', desc: 'Every claim cites a real paper or trial — zero hallucination, full transparency', color: '#a78bfa' },
   { icon: '🏥', title: 'Health Widgets', desc: 'BMI, Blood Pressure, Sleep, Calorie (TDEE), Heart Rate & Water intake calculators', color: '#34d399' },
   { icon: '📤', title: 'Export & Share', desc: 'Export full conversations as .txt or .json — share with your doctor or care team', color: '#38bdf8' },
+  { icon: '🔍', title: 'Query Expansion', desc: 'Automatically expands your question into optimized research terms for better results', color: '#a78bfa' },
 ]
 
 const PIPELINE_STEPS = [
@@ -255,9 +254,9 @@ export default function LandingPage() {
               <button
                 className="btn btn-glass"
                 style={{ fontSize: '0.95rem' }}
-                onClick={() => navigate('/chat')}
+                onClick={() => navigate('/onboarding')}
               >
-                🎙️ Try Voice Mode
+                📋 Set Patient Context
               </button>
             </div>
           </motion.div>

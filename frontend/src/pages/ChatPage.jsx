@@ -1,5 +1,6 @@
 /**
- * CURALINK — Chat Page (English-only, clean voice, theme-aware)
+ * CURALINK — Chat Page (Speech-free, theme-aware)
+ * All TTS / STT / mic features removed to prevent browser blank-screen bugs.
  */
 import React, { useState, useRef, useEffect, useCallback, Fragment } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
@@ -7,11 +8,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { v4 as uuidv4 } from 'uuid'
 import ReactMarkdown from 'react-markdown'
 import { sendMessageStream } from '../services/api'
-import { useVoice } from '../hooks/useVoice'
-import VoiceSettings from '../components/VoiceSettings'
 import WidgetPanel from '../components/WidgetPanel'
-import ResearchCard from '../components/ResearchCard'
-import TrialCard from '../components/TrialCard'
 import StructuredInput from '../components/StructuredInput'
 
 // ─── Export conversation helper ─────────────────────────────
@@ -49,8 +46,6 @@ const THEMES = [
   { id: 'sunset', label: '🌅 Sunset', icon: '🌅' },
 ]
 
-// CSS variable sets per theme — applied directly to the root so they
-// override everything including inline JSX styles (via var())
 const THEME_VARS = {
   dark: {
     '--bg-primary':     '#0a0a0f',
@@ -122,7 +117,6 @@ const THEME_VARS = {
   },
 }
 
-// Apply all CSS vars for a theme directly on :root
 function applyThemeVars(themeId) {
   const vars = THEME_VARS[themeId] || THEME_VARS.dark
   const root = document.documentElement
@@ -156,7 +150,7 @@ function Particles() {
   )
 }
 
-// ─── Waveform ──────────────────────────────────────────────────
+// ─── Waveform (typing indicator only) ─────────────────────────
 function Waveform({ color = '#22d3ee', bars = 8, height = 24 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
@@ -172,7 +166,7 @@ function Waveform({ color = '#22d3ee', bars = 8, height = 24 }) {
 }
 
 // ─── Message bubble ─────────────────────────────────────────────
-function Bubble({ msg, speaking }) {
+function Bubble({ msg }) {
   const isUser     = msg.role === 'user'
   const isStreaming = msg.streaming && !isUser
 
@@ -181,21 +175,18 @@ function Bubble({ msg, speaking }) {
       transition={{ duration: 0.28, ease: [0.4, 0, 0.2, 1] }}
       style={{ display: 'flex', gap: 12, marginBottom: 22, flexDirection: isUser ? 'row-reverse' : 'row', alignItems: 'flex-end' }}>
 
-      <motion.div
-        animate={speaking ? { boxShadow: ['0 0 0 rgba(124,109,250,0)', '0 0 24px rgba(124,109,250,0.8)', '0 0 0 rgba(124,109,250,0)'] } : {}}
-        transition={{ duration: 1.2, repeat: Infinity }}
+      <div
         style={{ width: 40, height: 40, borderRadius: 14, flexShrink: 0,
           background: isUser ? 'var(--glass-bg)' : 'linear-gradient(135deg,#7c6dfa,#22d3ee)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: 20, border: '1px solid var(--glass-border)' }}>
         {isUser ? '👤' : '⚕️'}
-      </motion.div>
+      </div>
 
       <div style={{ maxWidth: '75%', minWidth: 0 }}>
         <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', fontWeight: 600, marginBottom: 5, paddingInline: 4,
           display: 'flex', alignItems: 'center', gap: 7, flexDirection: isUser ? 'row-reverse' : 'row' }}>
           {isUser ? 'You' : '⚕️ Curalink AI'}
-          {speaking && <><Waveform bars={5} height={12} color="#67e8f9" /><span style={{ color: '#67e8f9', fontSize: '0.60rem' }}>Speaking</span></>}
           {isStreaming && <span style={{ color: '#a78bfa', fontSize: '0.60rem' }}>Composing...</span>}
           <span style={{ fontWeight: 400 }}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
         </div>
@@ -211,7 +202,6 @@ function Bubble({ msg, speaking }) {
             : (
               <div className="markdown-body">
                 <ReactMarkdown>{msg.content}</ReactMarkdown>
-                {/* Blinking cursor while streaming */}
                 {isStreaming && (
                   <motion.span animate={{ opacity: [1, 0, 1] }} transition={{ duration: 0.7, repeat: Infinity }}
                     style={{ display: 'inline-block', width: 2, height: '1em', background: '#a78bfa',
@@ -235,6 +225,48 @@ function Bubble({ msg, speaking }) {
   )
 }
 
+// ─── Sources panel ──────────────────────────────────────────────
+function SourcesPanel({ pubs = [], trials = [] }) {
+  const [open, setOpen] = useState(false)
+  if (!pubs.length && !trials.length) return null
+  return (
+    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
+      style={{ marginBottom: 18, marginLeft: 52 }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: 10,
+          padding: '5px 14px', fontSize: '0.72rem', color: 'var(--text-tertiary)', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: 6 }}>
+        {open ? '▲' : '▼'} {open ? 'Hide' : 'Show'} sources
+        {pubs.length > 0 && <span style={{ color: '#67e8f9' }}>📚 {pubs.length}</span>}
+        {trials.length > 0 && <span style={{ color: '#6ee7b7' }}>🔬 {trials.length}</span>}
+      </button>
+      {open && (
+        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {pubs.map((p, i) => (
+            <div key={i} style={{ padding: '8px 12px', borderRadius: 10, background: 'var(--glass-bg)',
+              border: '1px solid var(--glass-border)', fontSize: '0.73rem', color: 'var(--text-secondary)' }}>
+              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>{p.title}</div>
+              {p.authors && <div style={{ opacity: 0.7 }}>{Array.isArray(p.authors) ? p.authors.slice(0,3).join(', ') : p.authors}</div>}
+              {p.year && <div style={{ opacity: 0.55, fontSize: '0.68rem' }}>{p.journal || ''} {p.year}</div>}
+              {p.url && <a href={p.url} target="_blank" rel="noreferrer"
+                style={{ color: '#67e8f9', fontSize: '0.68rem' }}>View →</a>}
+            </div>
+          ))}
+          {trials.map((t, i) => (
+            <div key={i} style={{ padding: '8px 12px', borderRadius: 10, background: 'var(--glass-bg)',
+              border: '1px solid rgba(52,211,153,0.18)', fontSize: '0.73rem', color: 'var(--text-secondary)' }}>
+              <div style={{ fontWeight: 600, color: '#6ee7b7', marginBottom: 2 }}>{t.title || t.briefTitle}</div>
+              {t.status && <span style={{ fontSize: '0.65rem', opacity: 0.7 }}>Status: {t.status}</span>}
+              {t.url && <> · <a href={t.url} target="_blank" rel="noreferrer"
+                style={{ color: '#6ee7b7', fontSize: '0.68rem' }}>Details →</a></>}
+            </div>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  )
+}
+
 // ─── Typing indicator ──────────────────────────────────────────
 function Typing() {
   return (
@@ -251,7 +283,6 @@ function Typing() {
   )
 }
 
-// Animates through research pipeline stages
 function TypingStages() {
   const STAGES = [
     '🔍 Expanding your query…',
@@ -277,59 +308,32 @@ function TypingStages() {
   )
 }
 
-// ─── Mic permission notice ─────────────────────────────────────
-function PermissionNotice({ state }) {
-  if (state !== 'denied') return null
-  return (
-    <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-      style={{ padding: '10px 16px', borderRadius: 12, background: 'rgba(251,113,133,0.10)', border: '1px solid rgba(251,113,133,0.28)', marginBottom: 12 }}>
-      <p style={{ margin: 0, fontSize: '0.82rem', color: '#fda4af' }}>
-        🎙️ Microphone access denied. Please allow microphone access in your browser settings and refresh.
-      </p>
-    </motion.div>
-  )
-}
-
 // ═══════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════════
 export default function ChatPage() {
-  const navigate      = useNavigate()
-  const [searchParams]= useSearchParams()
-  const location      = useLocation()
-  const routeState    = location.state || {}
+  const navigate       = useNavigate()
+  const [searchParams] = useSearchParams()
+  const location       = useLocation()
+  const routeState     = location.state || {}
   const [sessionId]    = useState(uuidv4)
 
-  const [messages,          setMessages]         = useState([])
-  const [input,             setInput]            = useState('')
-  const [loading,           setLoading]          = useState(false)
-  const [error,             setError]            = useState(null)
-  const [speakIdx,          setSpeakIdx]         = useState(-1)
-  const [interim,           setInterim]          = useState('')
-  const [audioOn,           setAudioOn]          = useState(true)
-  const [voiceRate,         setVoiceRate]        = useState(0.92)
-  const [voicePitch,        setVoicePitch]       = useState(1.0)
-  const [showVoiceSettings, setShowVoiceSettings]= useState(false)
-  const [showSidebar,       setShowSidebar]      = useState(false)
-  const [showThemes,        setShowThemes]       = useState(false)
-  const [showWidgets,       setShowWidgets]      = useState(false)
-  const [lastStats,         setLastStats]        = useState(null)
-  const [theme,             setTheme]            = useState(() => localStorage.getItem('cl_theme') || 'dark')
-  // Pre-load patient context from onboarding, or empty
-  const [patientCtx, setPatientCtx] = useState(() => routeState.patientCtx || {})
-  const [showPatientCtx,  setShowPatientCtx]  = useState(false)
-  const autoSentRef        = useRef(false)
+  const [messages,        setMessages]       = useState([])
+  const [input,           setInput]          = useState('')
+  const [loading,         setLoading]        = useState(false)
+  const [error,           setError]          = useState(null)
+  const [showSidebar,     setShowSidebar]    = useState(false)
+  const [showThemes,      setShowThemes]     = useState(false)
+  const [showWidgets,     setShowWidgets]    = useState(false)
+  const [lastStats,       setLastStats]      = useState(null)
+  const [theme,           setTheme]          = useState(() => localStorage.getItem('cl_theme') || 'dark')
+  const [patientCtx,      setPatientCtx]     = useState(() => routeState.patientCtx || {})
+  const [showPatientCtx,  setShowPatientCtx] = useState(false)
 
-  const bottomRef = useRef(null)
-  const inputRef  = useRef(null)
-  const sendRef   = useRef(null)
-
-  // ── Voice hook ─────────────────────────────────────────────────
-  const voice = useVoice({
-    onFinalTranscript:  (text) => { setInterim(''); sendRef.current?.(text.trim()) },
-    onInterimTranscript:(text) => setInterim(text),
-    onEnd:              ()     => setInterim(''),
-  })
+  const autoSentRef = useRef(false)
+  const bottomRef   = useRef(null)
+  const inputRef    = useRef(null)
+  const sendRef     = useRef(null)
 
   // ── Apply theme ────────────────────────────────────────────────
   useEffect(() => {
@@ -337,7 +341,7 @@ export default function ChatPage() {
     localStorage.setItem('cl_theme', theme)
   }, [theme])
 
-  // ── Auto-send from onboarding form (?autoQuery via router state) ──
+  // ── Auto-send from onboarding ──────────────────────────────────
   useEffect(() => {
     const fromOnboarding = routeState.autoQuery
     const fromUrl        = searchParams.get('q')
@@ -349,20 +353,18 @@ export default function ChatPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── Auto scroll ────────────────────────────────────────────────
+  // ── Auto scroll ─────────────────────────────────────────────────
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, loading])
 
-  // ── Send message ───────────────────────────────────────────────
+  // ── Send message ────────────────────────────────────────────────
   const send = useCallback(async (text) => {
     const msg = (text || input).trim()
     if (!msg || loading) return
     setInput(''); setError(null)
-    voice.stopSpeaking()
 
     setMessages(prev => [...prev, { role: 'user', content: msg, timestamp: new Date() }])
     setLoading(true)
 
-    // Streaming placeholder message
     const streamId = Date.now()
     setMessages(prev => [...prev, {
       id: streamId, role: 'assistant', content: '',
@@ -370,7 +372,7 @@ export default function ChatPage() {
     }])
 
     try {
-      let fullText = ''
+      let fullText  = ''
       let finalMeta = null
 
       for await (const event of sendMessageStream(msg, sessionId, patientCtx, '')) {
@@ -394,31 +396,17 @@ export default function ChatPage() {
         }
       }
 
-      // Finalize — remove streaming flag, add publications/trialCards for SourcesPanel
-      setMessages(prev => {
-        const next = prev.map(m =>
-          m.id === streamId
-            ? { ...m, content: fullText, streaming: false,
-                pubs:         finalMeta?.rankedPubs    ?? m.pubs,
-                trials:       finalMeta?.rankedTrials  ?? m.trials,
-                source:       finalMeta?.source,
-                publications: finalMeta?.publications  || [],
-                trialCards:   finalMeta?.trials        || [],
-              }
-            : m
-        )
-        const idx = next.findIndex(m => m.id === streamId)
-        setSpeakIdx(idx)
-        return next
-      })
-
-      // TTS after full text received
-      if (audioOn && fullText) {
-        voice.speak(fullText, {
-          rate: voiceRate, pitch: voicePitch,
-          onDone: () => setSpeakIdx(-1),
-        })
-      }
+      setMessages(prev => prev.map(m =>
+        m.id === streamId
+          ? { ...m, content: fullText, streaming: false,
+              pubs:         finalMeta?.rankedPubs   ?? m.pubs,
+              trials:       finalMeta?.rankedTrials ?? m.trials,
+              source:       finalMeta?.source,
+              publications: finalMeta?.publications || [],
+              trialCards:   finalMeta?.trials       || [],
+            }
+          : m
+      ))
 
     } catch (e) {
       console.error('Streaming error:', e)
@@ -428,46 +416,26 @@ export default function ChatPage() {
       setLoading(false)
       setTimeout(() => inputRef.current?.focus(), 100)
     }
-  }, [input, loading, sessionId, patientCtx, audioOn, voiceRate, voicePitch, voice])
+  }, [input, loading, sessionId, patientCtx])
 
   useEffect(() => { sendRef.current = send }, [send])
 
-  const handleStop  = () => { voice.stopSpeaking(); setSpeakIdx(-1) }
-  const handleClear = () => { setMessages([]); handleStop() }
-  const toggleAudio = () => { setAudioOn(a => !a); if (voice.isSpeaking) handleStop() }
+  const handleClear = () => setMessages([])
 
-  // ── Keyboard shortcuts ─────────────────────────────────────
+  // ── Keyboard shortcuts ──────────────────────────────────────────
   useEffect(() => {
     const onKey = (e) => {
-      // Ctrl/Cmd + L = clear conversation
       if ((e.ctrlKey || e.metaKey) && e.key === 'l') { e.preventDefault(); if (messages.length) handleClear() }
-      // Ctrl/Cmd + E = export conversation
       if ((e.ctrlKey || e.metaKey) && e.key === 'e') { e.preventDefault(); if (messages.length) exportConversation(messages) }
-      // Escape = close panels
-      if (e.key === 'Escape') { setShowVoiceSettings(false); setShowThemes(false); setShowWidgets(false); setShowSidebar(false) }
-      // Ctrl/Cmd + / = focus input
+      if (e.key === 'Escape') { setShowThemes(false); setShowWidgets(false); setShowSidebar(false); setShowPatientCtx(false) }
       if ((e.ctrlKey || e.metaKey) && e.key === '/') { e.preventDefault(); inputRef.current?.focus() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [messages, handleClear])
-
-  // ── Welcome voice greeting ──────────────────────────────────────
-  const handleVoiceStart = useCallback(() => {
-    if (!voice.isSTTSupported) return
-    voice.speak('Hello! I am Curalink, your AI medical research companion. Tap the mic and ask me anything about symptoms, treatments, or clinical trials.', {
-      rate:   voiceRate,
-      pitch:  voicePitch,
-      force:  true,
-      onDone: () => setTimeout(() => voice.startListening(), 400),
-    })
-  }, [voice, voiceRate, voicePitch])
-
-  const speaking  = voice.isSpeaking
-  const listening = voice.isListening
+  }, [messages])
 
   // ─────────────────────────────────────────────────────────────
-  // SIDEBAR inner content (shared by desktop + mobile drawer)
+  // SIDEBAR inner content
   // ─────────────────────────────────────────────────────────────
   const SidebarContent = ({ onAction }) => (
     <>
@@ -486,25 +454,6 @@ export default function ChatPage() {
           </div>
           <button onClick={() => navigate('/')}
             style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1rem', opacity: 0.6 }}>🏠</button>
-        </div>
-      </div>
-
-      {/* Voice status card */}
-      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--glass-border)', flexShrink: 0 }}>
-        <div style={{ fontSize: '0.62rem', color: 'var(--text-tertiary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>🎙️ Voice Assistant</div>
-        <div style={{ padding: '10px 12px', borderRadius: 12, background: 'var(--glass-bg)', border: '1px solid var(--glass-border)' }}>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: 4 }}>
-            {voice.isSTTSupported ? '✅ Speech recognition ready' : '⚠️ STT not supported in this browser'}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-            {voice.isTTSSupported ? `✅ ${voice.availableVoices.length} voices loaded` : '⚠️ TTS not supported'}
-          </div>
-          {voice.permissionState === 'denied' && (
-            <div style={{ fontSize: '0.72rem', color: '#fda4af', marginTop: 4 }}>🚫 Mic blocked — check browser settings</div>
-          )}
-          {voice.permissionState === 'granted' && (
-            <div style={{ fontSize: '0.72rem', color: '#6ee7b7', marginTop: 4 }}>🎤 Mic permission granted</div>
-          )}
         </div>
       </div>
 
@@ -540,7 +489,7 @@ export default function ChatPage() {
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'Inter', sans-serif" }}>
       <Particles />
 
-      {/* ── Mobile overlay backdrop ────────────────────────────── */}
+      {/* ── Mobile overlay backdrop ─────────────────────────────── */}
       <AnimatePresence>
         {showSidebar && (
           <motion.div key="mob-bg"
@@ -551,7 +500,7 @@ export default function ChatPage() {
         )}
       </AnimatePresence>
 
-      {/* ── DESKTOP SIDEBAR ───────────────────────────────────── */}
+      {/* ── DESKTOP SIDEBAR ────────────────────────────────────── */}
       <aside id="cura-sidebar" style={{
         width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column',
         background: 'var(--sidebar-bg)', backdropFilter: 'blur(40px)',
@@ -560,18 +509,16 @@ export default function ChatPage() {
         <SidebarContent />
       </aside>
 
-      {/* ── MOBILE SIDEBAR DRAWER ─────────────────────────────── */}
+      {/* ── MOBILE SIDEBAR DRAWER ──────────────────────────────── */}
       <AnimatePresence>
         {showSidebar && (
-          <motion.div id="mob-sidebar"
-            key="mob-sidebar"
+          <motion.div id="mob-sidebar" key="mob-sidebar"
             initial={{ x: -280 }} animate={{ x: 0 }} exit={{ x: -280 }}
             transition={{ type: 'spring', stiffness: 320, damping: 32 }}
             style={{ position: 'fixed', top: 0, left: 0, height: '100vh', zIndex: 120,
               width: 260, display: 'flex', flexDirection: 'column',
               background: 'var(--sidebar-bg)', backdropFilter: 'blur(40px)',
               borderRight: '1px solid var(--glass-border)' }}>
-            {/* Close button row */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 12px', borderBottom: '1px solid var(--glass-border)' }}>
               <button onClick={() => setShowSidebar(false)}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.3rem', color: 'var(--text-tertiary)' }}>✕</button>
@@ -581,7 +528,7 @@ export default function ChatPage() {
         )}
       </AnimatePresence>
 
-      {/* ── MAIN ──────────────────────────────────────────────── */}
+      {/* ── MAIN ───────────────────────────────────────────────── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', zIndex: 5 }}>
 
         {/* TOP BAR */}
@@ -608,27 +555,6 @@ export default function ChatPage() {
           </div>
 
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-            {/* Speaking/Listening badge */}
-            <AnimatePresence>
-              {speaking && (
-                <motion.div key="sp" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }}
-                  onClick={handleStop}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderRadius: 100,
-                    background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', cursor: 'pointer' }}>
-                  <Waveform bars={5} height={14} color="#67e8f9" />
-                  <span style={{ fontSize: '0.68rem', color: '#67e8f9', fontWeight: 600 }}>Speaking — tap to stop</span>
-                </motion.div>
-              )}
-              {listening && (
-                <motion.div key="li" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderRadius: 100,
-                    background: 'rgba(251,113,133,0.10)', border: '1px solid rgba(251,113,133,0.28)' }}>
-                  <motion.div animate={{ scale: [1, 1.4, 1] }} transition={{ duration: 0.7, repeat: Infinity }}
-                    style={{ width: 7, height: 7, borderRadius: '50%', background: '#fb7185' }} />
-                  <span style={{ fontSize: '0.68rem', color: '#fda4af', fontWeight: 600 }}>Listening...</span>
-                </motion.div>
-              )}
-            </AnimatePresence>
 
             {/* Patient context button */}
             <motion.button
@@ -676,17 +602,6 @@ export default function ChatPage() {
               </AnimatePresence>
             </div>
 
-            {/* Voice settings */}
-            <motion.button id="voice-settings-btn" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
-              onClick={() => setShowVoiceSettings(s => !s)}
-              style={{ padding: '5px 12px', borderRadius: 9,
-                border: `1px solid ${showVoiceSettings ? 'rgba(124,109,250,0.40)' : 'var(--glass-border)'}`,
-                background: showVoiceSettings ? 'rgba(124,109,250,0.15)' : 'var(--glass-bg)',
-                color: showVoiceSettings ? 'var(--accent-tertiary)' : 'var(--text-tertiary)',
-                cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600 }}>
-              ⚙️ Voice
-            </motion.button>
-
             {/* Widget panel toggle */}
             <motion.button id="widget-panel-btn" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
               onClick={() => setShowWidgets(s => !s)}
@@ -704,34 +619,8 @@ export default function ChatPage() {
               )}
             </motion.button>
 
-            {/* Audio toggle */}
-            <motion.button id="audio-toggle" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
-              onClick={toggleAudio}
-              style={{ padding: '5px 12px', borderRadius: 9, border: '1px solid var(--glass-border)',
-                background: audioOn ? 'rgba(34,211,238,0.10)' : 'var(--glass-bg)',
-                color: audioOn ? '#67e8f9' : 'var(--text-tertiary)',
-                cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600 }}>
-              {audioOn ? '🔊 ON' : '🔇 OFF'}
-            </motion.button>
           </div>
         </div>
-
-        {/* Voice Settings panel */}
-        <AnimatePresence>
-          {showVoiceSettings && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              style={{ position: 'absolute', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center',
-                justifyContent: 'center', padding: 24, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(6px)' }}
-              onClick={e => { if (e.target === e.currentTarget) setShowVoiceSettings(false) }}>
-              <VoiceSettings
-                voice={voice} rate={voiceRate} pitch={voicePitch}
-                onRateChange={setVoiceRate} onPitchChange={setVoicePitch}
-                onClose={() => setShowVoiceSettings(false)}
-                currentLang="en-US"
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         {/* Patient Context Modal */}
         <AnimatePresence>
@@ -762,7 +651,7 @@ export default function ChatPage() {
           onSymptom={(q) => { send(q); setShowWidgets(false) }}
         />
 
-        {/* ── MESSAGE AREA ──────────────────────────────────────── */}
+        {/* ── MESSAGE AREA ───────────────────────────────────────── */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
 
           {/* Welcome screen */}
@@ -787,73 +676,18 @@ export default function ChatPage() {
               </motion.h1>
 
               <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}
-                style={{ maxWidth: 440, margin: '0 auto 28px', color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.8 }}>
+                style={{ maxWidth: 440, margin: '0 auto 32px', color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.8 }}>
                 I'm <strong style={{ color: 'var(--text-primary)' }}>Curalink</strong> — your AI medical research companion.<br />
-                {voice.isSTTSupported
-                  ? 'Tap the mic to speak, or type your question below.'
-                  : 'Type your medical question below to get started.'}
+                Type your question below to search PubMed, OpenAlex &amp; ClinicalTrials.
               </motion.p>
 
-              {/* Mic section */}
-              {voice.isSTTSupported && (
-                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
-                  style={{ marginBottom: 32 }}>
-                  <PermissionNotice state={voice.permissionState} />
-                  {speaking ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-                      <Waveform bars={14} height={48} color="#7c6dfa" />
-                      <p style={{ fontSize: '0.82rem', color: '#a78bfa', fontWeight: 600 }}>Curalink is speaking...</p>
-                      <motion.button whileTap={{ scale: 0.93 }} onClick={handleStop}
-                        style={{ padding: '7px 20px', borderRadius: 100, fontSize: '0.78rem', cursor: 'pointer',
-                          background: 'var(--glass-bg)', border: '1px solid rgba(124,109,250,0.4)', color: 'var(--accent-tertiary)' }}>
-                        Stop Speaking
-                      </motion.button>
-                    </div>
-                  ) : listening ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-                      <div style={{ position: 'relative', width: 80, height: 80 }}>
-                        {[1, 1.4, 1.8].map((s, i) => (
-                          <motion.div key={i} animate={{ scale: [s, s + 0.3, s], opacity: [0.5, 0, 0.5] }}
-                            transition={{ duration: 1.6, repeat: Infinity, delay: i * 0.45 }}
-                            style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid #7c6dfa' }} />
-                        ))}
-                        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'rgba(124,109,250,0.15)',
-                          border: '2px solid rgba(124,109,250,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32 }}>🎙️</div>
-                      </div>
-                      <p style={{ fontSize: '0.82rem', color: '#a78bfa', fontWeight: 600 }}>Listening in English...</p>
-                      {interim && <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontStyle: 'italic', maxWidth: 300, textAlign: 'center' }}>"{interim}"</p>}
-                      <motion.button whileTap={{ scale: 0.93 }} onClick={() => voice.stopListening()}
-                        style={{ padding: '7px 20px', borderRadius: 100, fontSize: '0.78rem', cursor: 'pointer',
-                          background: 'var(--glass-bg)', border: '1px solid rgba(124,109,250,0.4)', color: 'var(--accent-tertiary)' }}>
-                        Stop Listening
-                      </motion.button>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-                      <motion.button
-                        whileHover={{ scale: 1.08, boxShadow: '0 0 40px rgba(124,109,250,0.60)' }}
-                        whileTap={{ scale: 0.93 }}
-                        onClick={handleVoiceStart}
-                        style={{ width: 84, height: 84, borderRadius: '50%', border: 'none', cursor: 'pointer',
-                          background: 'linear-gradient(135deg, rgba(124,109,250,0.30), rgba(124,109,250,0.15))',
-                          outline: '2px solid rgba(124,109,250,0.55)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 36, boxShadow: '0 8px 32px rgba(124,109,250,0.28)' }}>
-                        🎙️
-                      </motion.button>
-                      <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>Tap to hear greeting & start talking</span>
-                    </div>
-                  )}
-                </motion.div>
-              )}
-
               {/* Suggestion chips */}
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.55 }}>
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.45 }}>
                 <div style={{ fontSize: '0.68rem', color: 'var(--text-tertiary)', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 12 }}>Popular Questions</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', maxWidth: 580, margin: '0 auto' }}>
                   {SUGGESTIONS.map((s, i) => (
                     <motion.button key={s.text}
-                      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 + i * 0.07 }}
+                      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 + i * 0.07 }}
                       whileHover={{ scale: 1.05, y: -2 }} whileTap={{ scale: 0.96 }}
                       onClick={() => send(s.text)}
                       style={{ padding: '9px 16px', borderRadius: 100, border: 'none', cursor: 'pointer',
@@ -873,7 +707,7 @@ export default function ChatPage() {
           {/* Messages */}
           {messages.map((msg, i) => (
             <Fragment key={i}>
-              <Bubble msg={msg} speaking={speakIdx === i && speaking} />
+              <Bubble msg={msg} />
               {msg.role === 'assistant' && !msg.streaming &&
                (msg.publications?.length > 0 || msg.trialCards?.length > 0) && (
                 <SourcesPanel pubs={msg.publications || []} trials={msg.trialCards || []} />
@@ -893,22 +727,12 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
 
-        {/* ── INPUT BAR ─────────────────────────────────────────── */}
+        {/* ── INPUT BAR ──────────────────────────────────────────── */}
         <div id="cura-inputbar" style={{
           background: 'var(--inputbar-bg)', backdropFilter: 'blur(40px)',
           borderTop: '1px solid var(--glass-border)',
           padding: '14px 22px', flexShrink: 0
         }}>
-          {/* Interim transcript */}
-          <AnimatePresence>
-            {interim && (
-              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
-                style={{ fontSize: '0.78rem', color: '#fda4af', marginBottom: 8, paddingLeft: 4, fontStyle: 'italic' }}>
-                🎙️ "{interim}"
-              </motion.div>
-            )}
-          </AnimatePresence>
-
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
             <div style={{ flex: 1, position: 'relative' }}>
               <textarea id="chat-input" ref={inputRef}
@@ -926,20 +750,6 @@ export default function ChatPage() {
                 onInput={e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px' }}
               />
             </div>
-
-            {/* Mic button */}
-            {voice.isSTTSupported && (
-              <motion.button whileHover={{ scale: 1.07 }} whileTap={{ scale: 0.92 }}
-                onClick={listening ? () => voice.stopListening() : speaking ? handleStop : () => voice.startListening()}
-                className="btn-icon"
-                style={listening
-                  ? { background: 'linear-gradient(135deg,#fb7185,#f43f5e)', borderColor: 'transparent', boxShadow: '0 0 20px rgba(251,113,133,0.5)' }
-                  : speaking
-                    ? { background: 'linear-gradient(135deg,#7c6dfa,#a78bfa)', borderColor: 'transparent' }
-                    : {}}>
-                {listening ? '🎙️' : speaking ? '🔊' : '🎙️'}
-              </motion.button>
-            )}
 
             {/* Send button */}
             <motion.button id="send-btn" className="btn-icon"
@@ -973,7 +783,7 @@ export default function ChatPage() {
               {input.length > 0 && (
                 <span style={{ color: input.length > 500 ? '#fb7185' : 'var(--text-tertiary)' }}>{input.length}/1000</span>
               )}
-              <span style={{ color: 'var(--accent-primary)', fontWeight: 600 }}>🌐 English</span>
+              <span style={{ color: 'var(--accent-primary)', fontWeight: 600 }}>🌐 AI Research</span>
             </span>
           </div>
         </div>
