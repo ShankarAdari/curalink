@@ -1,10 +1,11 @@
 /**
  * useElevenLabs — Natural expressive TTS via ElevenLabs API
- * Falls back to browser TTS if no API key or quota exceeded
+ * Calls ElevenLabs directly from the browser — no backend needed.
+ * Falls back to browser TTS if no API key or quota exceeded.
  */
 import { useState, useRef, useCallback, useEffect } from 'react'
 
-const TTS_BASE = 'http://localhost:5000/api/tts'
+const EL_BASE = 'https://api.elevenlabs.io/v1'
 const KEY_STORAGE = 'curalink_el_key'
 const VOICE_STORAGE = 'curalink_el_voice'
 const SETTINGS_STORAGE = 'curalink_el_settings'
@@ -43,19 +44,32 @@ export function useElevenLabs() {
     localStorage.setItem(SETTINGS_STORAGE, JSON.stringify(s))
   }, [])
 
-  // Load voices
+  // Load voices directly from ElevenLabs
   const loadVoices = useCallback(async () => {
+    if (!localStorage.getItem(KEY_STORAGE)) return
     try {
-      const res = await fetch(`${TTS_BASE}/voices`)
+      const key = localStorage.getItem(KEY_STORAGE)
+      const res = await fetch(`${EL_BASE}/voices`, {
+        headers: { 'xi-api-key': key }
+      })
+      if (!res.ok) { setKeyError(true); return }
       const data = await res.json()
-      setVoices(data.voices || [])
-      setHasKey(data.hasKey || false)
+      const voiceList = (data.voices || []).map(v => ({
+        voice_id: v.voice_id,
+        name: v.name,
+        preview_url: v.preview_url,
+        labels: v.labels
+      }))
+      setVoices(voiceList)
+      setHasKey(true)
     } catch (e) {
       console.warn('Could not load EL voices:', e.message)
     }
   }, [])
 
-  useEffect(() => { loadVoices() }, [loadVoices])
+  useEffect(() => {
+    if (apiKey) loadVoices()
+  }, [apiKey, loadVoices])
 
   // Stop any current audio
   const stop = useCallback(() => {
@@ -71,37 +85,36 @@ export function useElevenLabs() {
     setIsLoading(false)
   }, [])
 
-  // Speak via ElevenLabs
+  // Speak via ElevenLabs directly from browser
   const speak = useCallback(async (text, opts = {}) => {
-    if (!apiKey) return false  // no key — tell caller to use browser TTS
+    if (!apiKey) return false  // no key — caller falls back to browser TTS
 
     stop()
     setIsLoading(true)
 
     try {
-      const res = await fetch(`${TTS_BASE}/speak`, {
+      const vid = opts.voiceId || voiceId
+      const res = await fetch(`${EL_BASE}/text-to-speech/${vid}`, {
         method: 'POST',
         headers: {
-          'Content-Type':       'application/json',
-          'x-elevenlabs-key':   apiKey
+          'Content-Type': 'application/json',
+          'xi-api-key':   apiKey
         },
         body: JSON.stringify({
-          text,
-          voiceId: opts.voiceId || voiceId,
-          stability:  settings.stability,
-          similarity: settings.similarity,
-          style:      settings.style,
+          text: text.slice(0, 2500), // ElevenLabs free tier limit
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: {
+            stability:        settings.stability,
+            similarity_boost: settings.similarity,
+            style:            settings.style,
+            use_speaker_boost: true
+          }
         })
       })
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        if (err.error === 'INVALID_KEY') { setKeyError(true);   return false }
-        if (err.error === 'QUOTA')       { setQuotaError(true); return false }
-        if (err.error === 'NO_KEY')      { return false }
-        console.warn('TTS error:', err.message)
-        return false
-      }
+      if (res.status === 401) { setKeyError(true);   setIsLoading(false); return false }
+      if (res.status === 429) { setQuotaError(true); setIsLoading(false); return false }
+      if (!res.ok) { console.warn('EL TTS error:', res.status); setIsLoading(false); return false }
 
       const blob = await res.blob()
       const url  = URL.createObjectURL(blob)
@@ -136,12 +149,24 @@ export function useElevenLabs() {
     }
   }, [apiKey, voiceId, settings, stop])
 
-  // Preview a voice
+  // Preview a voice (using the ElevenLabs preview_url or synthesize)
   const previewVoice = useCallback(async (vid, previewText = 'Hello! I am your Curalink AI medical research companion. How can I help you today?') => {
+    // Try to play the preview_url first (no quota used)
+    const voice = voices.find(v => v.voice_id === vid)
+    if (voice?.preview_url) {
+      stop()
+      const audio = new Audio(voice.preview_url)
+      audioRef.current = audio
+      setIsSpeaking(true)
+      audio.onended = () => setIsSpeaking(false)
+      audio.onerror = () => setIsSpeaking(false)
+      await audio.play().catch(() => {})
+      return
+    }
     if (!apiKey) return
     stop()
     await speak(previewText, { voiceId: vid })
-  }, [apiKey, speak, stop])
+  }, [apiKey, speak, stop, voices])
 
   return {
     apiKey, setApiKey,
