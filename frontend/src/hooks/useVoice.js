@@ -96,6 +96,8 @@ export function useVoice({ onFinalTranscript, onInterimTranscript, onEnd } = {})
       .filter(s => s.length > 3)
 
   // ── Speak one chunk ────────────────────────────────────────────────────────
+  // Chrome has a well-known bug where speechSynthesis stops mid-utterance and
+  // the page appears blank/frozen. The fix: keepalive resume() interval + timeout.
   const speakChunk = useCallback((text, opts = {}) => {
     return new Promise((resolve) => {
       if (!isTTSSupported || !text.trim()) { resolve(); return }
@@ -108,8 +110,17 @@ export function useVoice({ onFinalTranscript, onInterimTranscript, onEnd } = {})
       const voice  = getBestVoice()
       if (voice) utt.voice = voice
 
-      utt.onend   = () => resolve()
+      let keepalive = null
+      let timeout   = null
+
+      const cleanup = () => {
+        clearInterval(keepalive)
+        clearTimeout(timeout)
+      }
+
+      utt.onend   = () => { cleanup(); resolve() }
       utt.onerror = (e) => {
+        cleanup()
         if (e.error !== 'interrupted' && e.error !== 'cancelled') {
           console.warn('TTS chunk error:', e.error)
         }
@@ -118,11 +129,24 @@ export function useVoice({ onFinalTranscript, onInterimTranscript, onEnd } = {})
 
       // Chrome needs a brief gap between utterances
       setTimeout(() => {
-        if (isSpeakingRef.current && isTTSSupported) {
-          window.speechSynthesis.speak(utt)
-        } else {
+        if (!isSpeakingRef.current || !isTTSSupported) { resolve(); return }
+
+        window.speechSynthesis.speak(utt)
+
+        // ── Chrome keepalive fix ──────────────────────────────────────────
+        // Chrome pauses synthesis after ~15 s causing a blank screen.
+        // Periodically calling resume() keeps it alive.
+        keepalive = setInterval(() => {
+          if (window.speechSynthesis.paused) {
+            window.speechSynthesis.resume()
+          }
+        }, 5000)
+
+        // Safety timeout — resolve the chunk if it takes longer than 12 s
+        timeout = setTimeout(() => {
+          cleanup()
           resolve()
-        }
+        }, 12000)
       }, 60)
     })
   }, [isTTSSupported, getBestVoice])

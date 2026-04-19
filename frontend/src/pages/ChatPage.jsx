@@ -1,8 +1,8 @@
 /**
  * CURALINK — Chat Page (English-only, clean voice, theme-aware)
  */
-import { useState, useRef, useEffect, useCallback } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import React, { useState, useRef, useEffect, useCallback, Fragment } from 'react'
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { v4 as uuidv4 } from 'uuid'
 import ReactMarkdown from 'react-markdown'
@@ -10,6 +10,9 @@ import { sendMessageStream } from '../services/api'
 import { useVoice } from '../hooks/useVoice'
 import VoiceSettings from '../components/VoiceSettings'
 import WidgetPanel from '../components/WidgetPanel'
+import ResearchCard from '../components/ResearchCard'
+import TrialCard from '../components/TrialCard'
+import StructuredInput from '../components/StructuredInput'
 
 // ─── Export conversation helper ─────────────────────────────
 function exportConversation(messages, format = 'txt') {
@@ -291,8 +294,10 @@ function PermissionNotice({ state }) {
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════════
 export default function ChatPage() {
-  const navigate       = useNavigate()
-  const [searchParams] = useSearchParams()
+  const navigate      = useNavigate()
+  const [searchParams]= useSearchParams()
+  const location      = useLocation()
+  const routeState    = location.state || {}
   const [sessionId]    = useState(uuidv4)
 
   const [messages,          setMessages]         = useState([])
@@ -310,7 +315,9 @@ export default function ChatPage() {
   const [showWidgets,       setShowWidgets]      = useState(false)
   const [lastStats,         setLastStats]        = useState(null)
   const [theme,             setTheme]            = useState(() => localStorage.getItem('cl_theme') || 'dark')
-  const [patientCtx]       = useState({})
+  // Pre-load patient context from onboarding, or empty
+  const [patientCtx, setPatientCtx] = useState(() => routeState.patientCtx || {})
+  const [showPatientCtx,  setShowPatientCtx]  = useState(false)
   const autoSentRef        = useRef(false)
 
   const bottomRef = useRef(null)
@@ -330,12 +337,14 @@ export default function ChatPage() {
     localStorage.setItem('cl_theme', theme)
   }, [theme])
 
-  // ── Auto-send ?q= from landing page ───────────────────────────
+  // ── Auto-send from onboarding form (?autoQuery via router state) ──
   useEffect(() => {
-    const q = searchParams.get('q')
+    const fromOnboarding = routeState.autoQuery
+    const fromUrl        = searchParams.get('q')
+    const q = fromOnboarding || fromUrl
     if (q?.trim() && !autoSentRef.current) {
       autoSentRef.current = true
-      setTimeout(() => sendRef.current?.(q.trim()), 700)
+      setTimeout(() => sendRef.current?.(q.trim()), 800)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -385,14 +394,17 @@ export default function ChatPage() {
         }
       }
 
-      // Finalize — remove streaming flag, update badge counts
+      // Finalize — remove streaming flag, add publications/trialCards for SourcesPanel
       setMessages(prev => {
         const next = prev.map(m =>
           m.id === streamId
             ? { ...m, content: fullText, streaming: false,
-                pubs:   finalMeta?.rankedPubs  ?? m.pubs,
-                trials: finalMeta?.rankedTrials ?? m.trials,
-                source: finalMeta?.source }
+                pubs:         finalMeta?.rankedPubs    ?? m.pubs,
+                trials:       finalMeta?.rankedTrials  ?? m.trials,
+                source:       finalMeta?.source,
+                publications: finalMeta?.publications  || [],
+                trialCards:   finalMeta?.trials        || [],
+              }
             : m
         )
         const idx = next.findIndex(m => m.id === streamId)
@@ -618,6 +630,23 @@ export default function ChatPage() {
               )}
             </AnimatePresence>
 
+            {/* Patient context button */}
+            <motion.button
+              id="patient-ctx-btn" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
+              onClick={() => setShowPatientCtx(s => !s)}
+              title={patientCtx.disease ? `Context: ${patientCtx.name || ''} • ${patientCtx.disease}` : 'Set patient context'}
+              style={{
+                padding: '5px 12px', borderRadius: 9, cursor: 'pointer',
+                border: `1px solid ${patientCtx.disease ? 'rgba(52,211,153,0.40)' : 'var(--glass-border)'}`,
+                background: patientCtx.disease ? 'rgba(52,211,153,0.12)' : 'var(--glass-bg)',
+                color: patientCtx.disease ? '#6ee7b7' : 'var(--text-tertiary)',
+                fontSize: '0.78rem', fontWeight: 600
+              }}
+            >
+              👤 {patientCtx.name ? patientCtx.name.split(' ')[0] : 'Patient'}
+              {patientCtx.disease && <span style={{ opacity: 0.7, marginLeft: 4, fontSize: '0.68rem' }}>• {patientCtx.disease.slice(0, 12)}</span>}
+            </motion.button>
+
             {/* Theme picker */}
             <div style={{ position: 'relative' }}>
               <motion.button id="theme-toggle" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
@@ -699,6 +728,27 @@ export default function ChatPage() {
                 onRateChange={setVoiceRate} onPitchChange={setVoicePitch}
                 onClose={() => setShowVoiceSettings(false)}
                 currentLang="en-US"
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Patient Context Modal */}
+        <AnimatePresence>
+          {showPatientCtx && (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              style={{
+                position: 'absolute', inset: 0, zIndex: 55,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: 24, background: 'rgba(0,0,0,0.60)', backdropFilter: 'blur(8px)'
+              }}
+              onClick={e => { if (e.target === e.currentTarget) setShowPatientCtx(false) }}
+            >
+              <StructuredInput
+                initialContext={patientCtx}
+                onSave={(ctx) => { setPatientCtx(ctx); setShowPatientCtx(false) }}
+                onClose={() => setShowPatientCtx(false)}
               />
             </motion.div>
           )}
@@ -821,11 +871,15 @@ export default function ChatPage() {
           )}
 
           {/* Messages */}
-          <AnimatePresence>
-            {messages.map((msg, i) => (
-              <Bubble key={i} msg={msg} speaking={speakIdx === i && speaking} />
-            ))}
-          </AnimatePresence>
+          {messages.map((msg, i) => (
+            <Fragment key={i}>
+              <Bubble msg={msg} speaking={speakIdx === i && speaking} />
+              {msg.role === 'assistant' && !msg.streaming &&
+               (msg.publications?.length > 0 || msg.trialCards?.length > 0) && (
+                <SourcesPanel pubs={msg.publications || []} trials={msg.trialCards || []} />
+              )}
+            </Fragment>
+          ))}
           {loading && <Typing />}
 
           {/* Error */}

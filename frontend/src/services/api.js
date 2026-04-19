@@ -38,6 +38,7 @@ function extractKeywords(text) {
 
 function detectIntent(query) {
   const q = query.toLowerCase()
+  if (q.includes('researcher') || q.includes('expert') || q.includes('scientist') || q.includes('top researcher') || q.includes('leading researcher') || q.includes('who studies')) return 'researcher'
   if (q.includes('trial') || q.includes('study') || q.includes('recruit')) return 'clinical_trial'
   if (q.includes('treatment') || q.includes('therapy') || q.includes('drug') || q.includes('medication')) return 'treatment'
   if (q.includes('symptom') || q.includes('sign') || q.includes('diagnos')) return 'diagnosis'
@@ -49,13 +50,14 @@ function detectIntent(query) {
 
 function getIntentTerms(intent) {
   const terms = {
-    clinical_trial: 'clinical trial',
-    treatment: 'treatment therapy',
-    diagnosis: 'diagnosis',
-    recent_research: 'recent study 2024 2025',
-    lifestyle: 'lifestyle intervention',
-    side_effects: 'adverse effects safety',
-    general: ''
+    researcher:     'leading researcher expert author publication',
+    clinical_trial: 'clinical trial randomized controlled',
+    treatment:      'treatment therapy intervention',
+    diagnosis:      'diagnosis diagnostic biomarker',
+    recent_research:'recent study 2024 2025',
+    lifestyle:      'lifestyle intervention prevention',
+    side_effects:   'adverse effects safety tolerability',
+    general:        ''
   }
   return terms[intent] || ''
 }
@@ -105,9 +107,34 @@ function expandQuery(userQuery, patientContext = {}, history = []) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 2. PUBMED  (NCBI E-utilities — fully CORS-enabled with retmode=json)
+// 2. PUBMED  (NCBI E-utilities — summary + efetch for real abstracts)
 // ═══════════════════════════════════════════════════════════════════════════════
-async function fetchPubMed(query, maxResults = 20) {
+
+// Parse plain-text efetch output → map of pmid → abstract
+function parsePubMedAbstracts(text, ids) {
+  const map = {}
+  if (!text) return map
+  // Each record in the efetch text ends with "PMID: XXXXXXXX"
+  const blocks = text.split(/\nPMID:\s*/i)
+  for (const block of blocks) {
+    const pmidMatch = block.match(/^(\d+)/)
+    if (!pmidMatch) continue
+    const pmid = pmidMatch[1]
+    if (!ids.includes(pmid)) continue
+    // Look for "Abstract" header then grab the text that follows
+    const absMatch = block.match(/Abstract\s*\n+([\s\S]+?)(?:\n(?:Author information|Copyright|PMID|DOI|Free article):)/i)
+    if (absMatch) {
+      map[pmid] = absMatch[1].replace(/\s+/g, ' ').trim().slice(0, 800)
+    } else {
+      // Fallback: longest paragraph in the block (skip header lines)
+      const paragraphs = block.split(/\n{2,}/).map(p => p.replace(/\n/g, ' ').trim()).filter(p => p.length > 80)
+      if (paragraphs.length > 1) map[pmid] = paragraphs[1].slice(0, 800)
+    }
+  }
+  return map
+}
+
+async function fetchPubMed(query, maxResults = 50) {
   try {
     const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=${maxResults}&sort=pub+date&retmode=json`
     const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) })
@@ -115,28 +142,41 @@ async function fetchPubMed(query, maxResults = 20) {
     const idList = searchData?.esearchresult?.idlist || []
     if (idList.length === 0) return []
 
-    // Use esummary (JSON) — no XML/xml2js needed in browser
-    const summaryUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${idList.slice(0, 20).join(',')}&retmode=json`
-    const summaryRes = await fetch(summaryUrl, { signal: AbortSignal.timeout(15000) })
-    const summaryData = await summaryRes.json()
-    const result = summaryData?.result || {}
+    // Full pool (up to 50) for esummary — used for ranking
+    const ids        = idList.slice(0, maxResults)
+    // Abstract fetch only for top 20 to keep response time fast
+    const abstractIds = ids.slice(0, 20)
 
-    return idList
+    // Fetch summary for full pool + abstracts for top 20 in parallel
+    const [summaryRes, abstractRes] = await Promise.all([
+      fetch(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`,
+        { signal: AbortSignal.timeout(15000) }),
+      fetch(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${abstractIds.join(',')}&rettype=abstract&retmode=text`,
+        { signal: AbortSignal.timeout(20000) }).catch(() => null)
+    ])
+
+    const summaryData = await summaryRes.json()
+    const abstractText = abstractRes ? await abstractRes.text().catch(() => '') : ''
+    const result      = summaryData?.result || {}
+    const abstractMap = parsePubMedAbstracts(abstractText, abstractIds)
+
+    return ids
       .map(id => {
         const doc = result[id]
         if (!doc) return null
+        const abstract = abstractMap[id] || ''
         return {
           id: `pubmed_${id}`,
           pmid: id,
           title: doc.title || '',
-          abstract: doc.title || '', // esummary doesn't include abstract; use title as snippet
+          abstract: abstract || doc.title || '',
           authors: (doc.authors || []).slice(0, 5).map(a => a.name).filter(Boolean),
           year: doc.pubdate ? parseInt(doc.pubdate.slice(0, 4)) : null,
           journal: doc.fulljournalname || doc.source || '',
           source: 'PubMed',
           url: `https://pubmed.ncbi.nlm.nih.gov/${id}`,
           citationCount: 0,
-          snippet: doc.title || ''
+          snippet: abstract.slice(0, 200) || doc.title || ''
         }
       })
       .filter(Boolean)
@@ -160,11 +200,11 @@ function reconstructAbstract(invertedIndex) {
   } catch { return '' }
 }
 
-async function fetchOpenAlex(query, maxResults = 25) {
+async function fetchOpenAlex(query, maxResults = 50) {
   try {
     const params = new URLSearchParams({
       search: query,
-      'per-page': String(Math.min(maxResults, 25)),
+      'per-page': String(Math.min(maxResults, 50)),
       page: '1',
       sort: 'relevance_score:desc',
       filter: 'from_publication_date:2015-01-01',
@@ -265,16 +305,17 @@ function parseTrial(study) {
   } catch { return null }
 }
 
-async function fetchClinicalTrials(disease, query = '', pageSize = 10) {
+async function fetchClinicalTrials(disease, query = '', pageSize = 10, location = '') {
   try {
     const statuses = ['RECRUITING', 'NOT_YET_RECRUITING', 'ENROLLING_BY_INVITATION', 'COMPLETED']
     const requests = statuses.map(status => {
       const params = new URLSearchParams({
         'query.cond': disease || query,
         'filter.overallStatus': status,
-        pageSize: String(Math.ceil(pageSize / statuses.length)),
+        pageSize: String(Math.ceil(pageSize / statuses.length) + 2),
         format: 'json'
       })
+      if (location) params.set('query.locn', location)
       return fetch(`https://clinicaltrials.gov/api/v2/studies?${params}`, {
         signal: AbortSignal.timeout(15000)
       })
@@ -467,6 +508,34 @@ function buildPersonalizedTakeaways(intent, disease, pubs, trials, ctx) {
   return lines.join('\n') || `• Stay engaged with your care team\n• Review these findings with your specialist\n• Consider clinical trials for access to emerging therapies`
 }
 
+// ─── Source Attribution builder ───────────────────────────────────────────────
+function buildSourceAttribution(pubs, trials) {
+  const sections = []
+
+  if (pubs.length > 0) {
+    const pubLines = pubs.slice(0, 6).map((p, i) => {
+      const authors = (p.authors || []).slice(0, 3).join(', ') || 'Unknown Authors'
+      const year    = p.year || 'N/A'
+      const snippet = (p.abstract || p.snippet || p.title || '').slice(0, 160)
+      const journal = p.journal ? ` · *${p.journal}*` : ''
+      return `**${i + 1}. ${p.title}**\n   👥 ${authors} · 📅 ${year} · 🏛️ ${p.source}${journal}\n   🔗 [View Paper](${p.url})\n   > *"${snippet}${snippet.length >= 160 ? '...' : ''}"*`
+    })
+    sections.push(`**📚 Publications (${pubs.length} analyzed, top ${Math.min(pubs.length, 6)} shown):**\n\n${pubLines.join('\n\n')}`)
+  }
+
+  if (trials.length > 0) {
+    const trialLines = trials.slice(0, 4).map((t, i) => {
+      const contactStr = t.contacts?.[0]?.email ? `\n   📧 ${t.contacts[0].email}` : (t.contacts?.[0]?.name ? `\n   📋 Contact: ${t.contacts[0].name}` : '')
+      const locStr     = t.locations?.length > 0 ? `\n   📍 ${t.locations.slice(0, 2).join(' · ')}` : ''
+      const phaseStr   = t.phase && t.phase !== 'N/A' ? ` · Phase: ${t.phase}` : ''
+      return `**T${i + 1}. ${t.title}**\n   ${t.statusLabel}${phaseStr} · NCT: \`${t.nctId}\`\n   🔗 [View on ClinicalTrials.gov](${t.url})${locStr}${contactStr}`
+    })
+    sections.push(`**🔬 Clinical Trials (${trials.length} retrieved):**\n\n${trialLines.join('\n\n')}`)
+  }
+
+  return sections.join('\n\n') || '*Evidence retrieved from PubMed, OpenAlex, and ClinicalTrials.gov.*'
+}
+
 function buildTemplateResponse(userQuery, queryInfo, pubs, trials, ctx, history) {
   const disease  = queryInfo.disease || ctx?.disease || 'your condition'
   const name     = ctx?.name
@@ -529,6 +598,9 @@ ${trialsText}
 ## 💡 My Personalized Recommendations
 ${takeaways}
 
+## 📌 Source Attribution
+${buildSourceAttribution(pubs, trials)}
+
 ## ⚠️ Important Note
 This research summary is for educational purposes. Every patient's situation is unique — please discuss these findings with your healthcare team before making any changes to your treatment plan. You're doing the right thing by staying informed! 💙`
 }
@@ -548,15 +620,15 @@ export async function* sendMessageStream(message, sessionId, patientContext = {}
   // 2. Parallel fetch from all three APIs
   const disease = queryInfo.disease || ctx.disease || queryInfo.expandedQuery
   const [pubmedResults, openalexResults, trialResults] = await Promise.all([
-    fetchPubMed(queryInfo.expandedQuery, 20),
-    fetchOpenAlex(queryInfo.expandedQuery, 25),
-    fetchClinicalTrials(disease, queryInfo.expandedQuery, 10)
+    fetchPubMed(queryInfo.expandedQuery, 50),
+    fetchOpenAlex(queryInfo.expandedQuery, 50),
+    fetchClinicalTrials(disease, queryInfo.expandedQuery, 20, ctx.location || queryInfo.location || '')
   ])
 
   // 3. Merge, dedup, rank
   const allPubs      = mergeAndDeduplicate([...pubmedResults, ...openalexResults])
   const rankedPubs   = rankPublications(allPubs, queryInfo, 8)
-  const rankedTrials = rankTrials(trialResults, queryInfo, 4)
+  const rankedTrials = rankTrials(trialResults, queryInfo, 6)
 
   yield {
     type: 'meta',
