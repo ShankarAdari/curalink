@@ -1,0 +1,929 @@
+/**
+ * CURALINK — Chat Page (English-only, clean voice, theme-aware)
+ */
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { AnimatePresence, motion } from 'framer-motion'
+import { v4 as uuidv4 } from 'uuid'
+import ReactMarkdown from 'react-markdown'
+import { sendMessageStream } from '../services/api'
+import { useVoice } from '../hooks/useVoice'
+import VoiceSettings from '../components/VoiceSettings'
+import WidgetPanel from '../components/WidgetPanel'
+
+// ─── Export conversation helper ─────────────────────────────
+function exportConversation(messages, format = 'txt') {
+  const ts = new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-')
+  if (format === 'json') {
+    const blob = new Blob([JSON.stringify(messages, null, 2)], { type: 'application/json' })
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
+    a.download = `curalink_${ts}.json`; a.click()
+  } else {
+    const text = messages.map(m =>
+      `[${new Date(m.timestamp).toLocaleString()}] ${m.role === 'user' ? 'You' : 'Curalink'}:\n${m.content}`
+    ).join('\n\n' + '─'.repeat(60) + '\n\n')
+    const blob = new Blob([`CURALINK — AI Medical Research Conversation\nExported: ${new Date().toLocaleString()}\n\n${'═'.repeat(60)}\n\n${text}`], { type: 'text/plain' })
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
+    a.download = `curalink_${ts}.txt`; a.click()
+  }
+}
+
+// ─── Suggestions ───────────────────────────────────────────────
+const SUGGESTIONS = [
+  { icon: '🫁', text: 'Lung cancer latest treatments 2025',    color: '#fb7185' },
+  { icon: '🧠', text: "Parkinson's deep brain stimulation",    color: '#a78bfa' },
+  { icon: '💉', text: 'Diabetes clinical trials near me',      color: '#22d3ee' },
+  { icon: '❤️', text: 'Heart disease breakthroughs 2025',      color: '#f43f5e' },
+  { icon: '🧬', text: "Alzheimer's prevention research",       color: '#34d399' },
+  { icon: '💊', text: 'Immunotherapy side effect management',  color: '#fbbf24' },
+]
+
+// ─── Themes ────────────────────────────────────────────────────
+const THEMES = [
+  { id: 'dark',   label: '🌑 Dark',   icon: '🌑' },
+  { id: 'light',  label: '☀️ Light',  icon: '☀️' },
+  { id: 'ocean',  label: '🌊 Ocean',  icon: '🌊' },
+  { id: 'sunset', label: '🌅 Sunset', icon: '🌅' },
+]
+
+// CSS variable sets per theme — applied directly to the root so they
+// override everything including inline JSX styles (via var())
+const THEME_VARS = {
+  dark: {
+    '--bg-primary':     '#0a0a0f',
+    '--text-primary':   'rgba(255,255,255,0.95)',
+    '--text-secondary': 'rgba(255,255,255,0.65)',
+    '--text-tertiary':  'rgba(255,255,255,0.40)',
+    '--glass-bg':       'rgba(255,255,255,0.05)',
+    '--glass-bg-hover': 'rgba(255,255,255,0.08)',
+    '--glass-border':   'rgba(255,255,255,0.10)',
+    '--sidebar-bg':     'rgba(6,6,12,0.93)',
+    '--topbar-bg':      'rgba(6,6,12,0.88)',
+    '--inputbar-bg':    'rgba(6,6,12,0.92)',
+    '--bubble-user':    'rgba(124,109,250,0.22)',
+    '--bubble-ai':      'rgba(255,255,255,0.05)',
+    '--accent-primary': '#7c6dfa',
+    '--accent-secondary':'#a78bfa',
+    '--accent-tertiary':'#c4b5fd',
+  },
+  light: {
+    '--bg-primary':     '#f0f2fc',
+    '--text-primary':   'rgba(15,15,40,0.95)',
+    '--text-secondary': 'rgba(30,30,80,0.68)',
+    '--text-tertiary':  'rgba(60,60,120,0.48)',
+    '--glass-bg':       'rgba(255,255,255,0.75)',
+    '--glass-bg-hover': 'rgba(255,255,255,0.90)',
+    '--glass-border':   'rgba(100,100,180,0.18)',
+    '--sidebar-bg':     'rgba(230,232,248,0.97)',
+    '--topbar-bg':      'rgba(230,233,250,0.94)',
+    '--inputbar-bg':    'rgba(225,228,248,0.97)',
+    '--bubble-user':    'rgba(124,109,250,0.18)',
+    '--bubble-ai':      'rgba(255,255,255,0.80)',
+    '--accent-primary': '#6d5ff5',
+    '--accent-secondary':'#9175f0',
+    '--accent-tertiary':'#7c6dfa',
+  },
+  ocean: {
+    '--bg-primary':     '#020d1a',
+    '--text-primary':   'rgba(218,245,255,0.95)',
+    '--text-secondary': 'rgba(140,215,255,0.70)',
+    '--text-tertiary':  'rgba(90,190,255,0.48)',
+    '--glass-bg':       'rgba(0,55,110,0.25)',
+    '--glass-bg-hover': 'rgba(0,75,150,0.32)',
+    '--glass-border':   'rgba(0,200,255,0.16)',
+    '--sidebar-bg':     'rgba(2,15,32,0.96)',
+    '--topbar-bg':      'rgba(2,14,30,0.92)',
+    '--inputbar-bg':    'rgba(2,16,34,0.96)',
+    '--bubble-user':    'rgba(14,165,233,0.22)',
+    '--bubble-ai':      'rgba(0,60,120,0.30)',
+    '--accent-primary': '#0ea5e9',
+    '--accent-secondary':'#38bdf8',
+    '--accent-tertiary':'#7dd3fc',
+  },
+  sunset: {
+    '--bg-primary':     '#0f0508',
+    '--text-primary':   'rgba(255,242,228,0.96)',
+    '--text-secondary': 'rgba(255,198,158,0.72)',
+    '--text-tertiary':  'rgba(255,168,128,0.50)',
+    '--glass-bg':       'rgba(80,18,28,0.28)',
+    '--glass-bg-hover': 'rgba(120,28,38,0.34)',
+    '--glass-border':   'rgba(255,100,70,0.18)',
+    '--sidebar-bg':     'rgba(15,5,8,0.96)',
+    '--topbar-bg':      'rgba(14,5,8,0.92)',
+    '--inputbar-bg':    'rgba(15,5,10,0.96)',
+    '--bubble-user':    'rgba(249,115,22,0.22)',
+    '--bubble-ai':      'rgba(80,18,28,0.40)',
+    '--accent-primary': '#f97316',
+    '--accent-secondary':'#fb923c',
+    '--accent-tertiary':'#fdba74',
+  },
+}
+
+// Apply all CSS vars for a theme directly on :root
+function applyThemeVars(themeId) {
+  const vars = THEME_VARS[themeId] || THEME_VARS.dark
+  const root = document.documentElement
+  root.setAttribute('data-theme', themeId)
+  Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v))
+  document.body.style.background = vars['--bg-primary']
+}
+
+// ─── Particles ─────────────────────────────────────────────────
+function Particles() {
+  return (
+    <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
+      {Array.from({ length: 18 }).map((_, i) => (
+        <motion.div key={i}
+          animate={{ y: [-20, -80, -20], opacity: [0, 0.35, 0], x: [0, (i % 2 ? 28 : -28), 0] }}
+          transition={{ duration: 4 + i * 0.5, repeat: Infinity, delay: i * 0.4, ease: 'easeInOut' }}
+          style={{
+            position: 'absolute',
+            left: `${5 + (i * 4.7) % 90}%`,
+            top:  `${10 + (i * 7.3) % 80}%`,
+            width: 4 + (i % 4) * 2, height: 4 + (i % 4) * 2,
+            borderRadius: '50%',
+            background: ['#7c6dfa','#22d3ee','#f97316','#34d399','#ec4899'][i % 5],
+            filter: 'blur(1px)',
+          }}
+        />
+      ))}
+      <div style={{ position: 'absolute', top: '-20%', left: '-10%', width: 600, height: 600, borderRadius: '50%', background: 'radial-gradient(circle, rgba(124,109,250,0.12) 0%, transparent 70%)', filter: 'blur(60px)' }} />
+      <div style={{ position: 'absolute', bottom: '-20%', right: '-10%', width: 500, height: 500, borderRadius: '50%', background: 'radial-gradient(circle, rgba(34,211,238,0.10) 0%, transparent 70%)', filter: 'blur(60px)' }} />
+    </div>
+  )
+}
+
+// ─── Waveform ──────────────────────────────────────────────────
+function Waveform({ color = '#22d3ee', bars = 8, height = 24 }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+      {Array.from({ length: bars }).map((_, i) => (
+        <motion.div key={i}
+          animate={{ scaleY: [0.3, 1, 0.2, 0.8, 0.3] }}
+          transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.09, ease: 'easeInOut' }}
+          style={{ width: 3, height, background: color, borderRadius: 2, transformOrigin: 'bottom' }}
+        />
+      ))}
+    </div>
+  )
+}
+
+// ─── Message bubble ─────────────────────────────────────────────
+function Bubble({ msg, speaking }) {
+  const isUser     = msg.role === 'user'
+  const isStreaming = msg.streaming && !isUser
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 16, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 0.28, ease: [0.4, 0, 0.2, 1] }}
+      style={{ display: 'flex', gap: 12, marginBottom: 22, flexDirection: isUser ? 'row-reverse' : 'row', alignItems: 'flex-end' }}>
+
+      <motion.div
+        animate={speaking ? { boxShadow: ['0 0 0 rgba(124,109,250,0)', '0 0 24px rgba(124,109,250,0.8)', '0 0 0 rgba(124,109,250,0)'] } : {}}
+        transition={{ duration: 1.2, repeat: Infinity }}
+        style={{ width: 40, height: 40, borderRadius: 14, flexShrink: 0,
+          background: isUser ? 'var(--glass-bg)' : 'linear-gradient(135deg,#7c6dfa,#22d3ee)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 20, border: '1px solid var(--glass-border)' }}>
+        {isUser ? '👤' : '⚕️'}
+      </motion.div>
+
+      <div style={{ maxWidth: '75%', minWidth: 0 }}>
+        <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', fontWeight: 600, marginBottom: 5, paddingInline: 4,
+          display: 'flex', alignItems: 'center', gap: 7, flexDirection: isUser ? 'row-reverse' : 'row' }}>
+          {isUser ? 'You' : '⚕️ Curalink AI'}
+          {speaking && <><Waveform bars={5} height={12} color="#67e8f9" /><span style={{ color: '#67e8f9', fontSize: '0.60rem' }}>Speaking</span></>}
+          {isStreaming && <span style={{ color: '#a78bfa', fontSize: '0.60rem' }}>Composing...</span>}
+          <span style={{ fontWeight: 400 }}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        </div>
+
+        <div style={{ padding: '14px 18px', lineHeight: 1.7,
+          background: isUser ? 'var(--bubble-user)' : 'var(--bubble-ai)',
+          border: `1px solid ${isUser ? 'rgba(124,109,250,0.35)' : 'var(--glass-border)'}`,
+          borderRadius: isUser ? '20px 20px 5px 20px' : '5px 20px 20px 20px',
+          backdropFilter: 'blur(20px)', fontSize: isUser ? '0.93rem' : '0.875rem',
+          color: 'var(--text-primary)', position: 'relative' }}>
+          {isUser
+            ? msg.content
+            : (
+              <div className="markdown-body">
+                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                {/* Blinking cursor while streaming */}
+                {isStreaming && (
+                  <motion.span animate={{ opacity: [1, 0, 1] }} transition={{ duration: 0.7, repeat: Infinity }}
+                    style={{ display: 'inline-block', width: 2, height: '1em', background: '#a78bfa',
+                      borderRadius: 2, marginLeft: 2, verticalAlign: 'middle' }}/>
+                )}
+              </div>
+            )
+          }
+        </div>
+
+        {!isUser && !isStreaming && (msg.pubs > 0 || msg.trials > 0) && (
+          <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
+            style={{ display: 'flex', gap: 5, marginTop: 5, paddingInline: 4 }}>
+            {msg.pubs   > 0 && <span className="badge badge-cyan"  style={{ fontSize: '0.60rem' }}>📚 {msg.pubs} papers</span>}
+            {msg.trials > 0 && <span className="badge badge-green" style={{ fontSize: '0.60rem' }}>🔬 {msg.trials} trials</span>}
+            {msg.source === 'ollama' && <span className="badge" style={{ fontSize: '0.60rem', background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.24)', color: '#6ee7b7' }}>🤖 Ollama</span>}
+          </motion.div>
+        )}
+      </div>
+    </motion.div>
+  )
+}
+
+// ─── Typing indicator ──────────────────────────────────────────
+function Typing() {
+  return (
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+      style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'flex-end' }}>
+      <motion.div animate={{ boxShadow: ['0 0 0 rgba(124,109,250,0)', '0 0 18px rgba(124,109,250,0.6)', '0 0 0 rgba(124,109,250,0)'] }}
+        transition={{ duration: 1.4, repeat: Infinity }}
+        style={{ width: 40, height: 40, borderRadius: 14, background: 'linear-gradient(135deg,#7c6dfa,#22d3ee)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>⚕️</motion.div>
+      <div style={{ background: 'var(--bubble-ai)', border: '1px solid var(--glass-border)', borderRadius: '5px 20px 20px 20px', padding: '14px 20px', minWidth: 200 }}>
+        <Waveform bars={10} color="#7c6dfa" height={20} />
+        <TypingStages />
+      </div>
+    </motion.div>
+  )
+}
+
+// Animates through research pipeline stages
+function TypingStages() {
+  const STAGES = [
+    '🔍 Expanding your query…',
+    '📚 Searching PubMed · OpenAlex…',
+    '🔬 Fetching ClinicalTrials.gov…',
+    '📊 Ranking by relevance…',
+    '🤖 Generating AI response…',
+  ]
+  const [stage, setStage] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setStage(s => (s + 1) % STAGES.length), 1800)
+    return () => clearInterval(t)
+  }, [])
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div key={stage}
+        initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+        transition={{ duration: 0.32 }}
+        style={{ fontSize: '0.70rem', color: 'var(--text-tertiary)', marginTop: 7, fontStyle: 'italic' }}>
+        {STAGES[stage]}
+      </motion.div>
+    </AnimatePresence>
+  )
+}
+
+// ─── Mic permission notice ─────────────────────────────────────
+function PermissionNotice({ state }) {
+  if (state !== 'denied') return null
+  return (
+    <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+      style={{ padding: '10px 16px', borderRadius: 12, background: 'rgba(251,113,133,0.10)', border: '1px solid rgba(251,113,133,0.28)', marginBottom: 12 }}>
+      <p style={{ margin: 0, fontSize: '0.82rem', color: '#fda4af' }}>
+        🎙️ Microphone access denied. Please allow microphone access in your browser settings and refresh.
+      </p>
+    </motion.div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN PAGE
+// ═══════════════════════════════════════════════════════════════
+export default function ChatPage() {
+  const navigate       = useNavigate()
+  const [searchParams] = useSearchParams()
+  const [sessionId]    = useState(uuidv4)
+
+  const [messages,          setMessages]         = useState([])
+  const [input,             setInput]            = useState('')
+  const [loading,           setLoading]          = useState(false)
+  const [error,             setError]            = useState(null)
+  const [speakIdx,          setSpeakIdx]         = useState(-1)
+  const [interim,           setInterim]          = useState('')
+  const [audioOn,           setAudioOn]          = useState(true)
+  const [voiceRate,         setVoiceRate]        = useState(0.92)
+  const [voicePitch,        setVoicePitch]       = useState(1.0)
+  const [showVoiceSettings, setShowVoiceSettings]= useState(false)
+  const [showSidebar,       setShowSidebar]      = useState(false)
+  const [showThemes,        setShowThemes]       = useState(false)
+  const [showWidgets,       setShowWidgets]      = useState(false)
+  const [lastStats,         setLastStats]        = useState(null)
+  const [theme,             setTheme]            = useState(() => localStorage.getItem('cl_theme') || 'dark')
+  const [patientCtx]       = useState({})
+  const autoSentRef        = useRef(false)
+
+  const bottomRef = useRef(null)
+  const inputRef  = useRef(null)
+  const sendRef   = useRef(null)
+
+  // ── Voice hook ─────────────────────────────────────────────────
+  const voice = useVoice({
+    onFinalTranscript:  (text) => { setInterim(''); sendRef.current?.(text.trim()) },
+    onInterimTranscript:(text) => setInterim(text),
+    onEnd:              ()     => setInterim(''),
+  })
+
+  // ── Apply theme ────────────────────────────────────────────────
+  useEffect(() => {
+    applyThemeVars(theme)
+    localStorage.setItem('cl_theme', theme)
+  }, [theme])
+
+  // ── Auto-send ?q= from landing page ───────────────────────────
+  useEffect(() => {
+    const q = searchParams.get('q')
+    if (q?.trim() && !autoSentRef.current) {
+      autoSentRef.current = true
+      setTimeout(() => sendRef.current?.(q.trim()), 700)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ── Auto scroll ────────────────────────────────────────────────
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, loading])
+
+  // ── Send message ───────────────────────────────────────────────
+  const send = useCallback(async (text) => {
+    const msg = (text || input).trim()
+    if (!msg || loading) return
+    setInput(''); setError(null)
+    voice.stopSpeaking()
+
+    setMessages(prev => [...prev, { role: 'user', content: msg, timestamp: new Date() }])
+    setLoading(true)
+
+    // Streaming placeholder message
+    const streamId = Date.now()
+    setMessages(prev => [...prev, {
+      id: streamId, role: 'assistant', content: '',
+      pubs: 0, trials: 0, streaming: true, timestamp: new Date()
+    }])
+
+    try {
+      let fullText = ''
+      let finalMeta = null
+
+      for await (const event of sendMessageStream(msg, sessionId, patientCtx, '')) {
+        if (event.type === 'meta') {
+          finalMeta = event
+          setLastStats(event)
+          setMessages(prev => prev.map(m =>
+            m.id === streamId ? { ...m, pubs: event.rankedPubs || 0, trials: event.rankedTrials || 0 } : m
+          ))
+        } else if (event.type === 'token') {
+          fullText += event.text
+          const captured = fullText
+          setMessages(prev => prev.map(m =>
+            m.id === streamId ? { ...m, content: captured } : m
+          ))
+        } else if (event.type === 'done') {
+          setLastStats(s => ({ ...(s || {}), source: event.source }))
+          finalMeta = { ...(finalMeta || {}), ...event }
+        } else if (event.type === 'error') {
+          throw new Error(event.message)
+        }
+      }
+
+      // Finalize — remove streaming flag, update badge counts
+      setMessages(prev => {
+        const next = prev.map(m =>
+          m.id === streamId
+            ? { ...m, content: fullText, streaming: false,
+                pubs:   finalMeta?.rankedPubs  ?? m.pubs,
+                trials: finalMeta?.rankedTrials ?? m.trials,
+                source: finalMeta?.source }
+            : m
+        )
+        const idx = next.findIndex(m => m.id === streamId)
+        setSpeakIdx(idx)
+        return next
+      })
+
+      // TTS after full text received
+      if (audioOn && fullText) {
+        voice.speak(fullText, {
+          rate: voiceRate, pitch: voicePitch,
+          onDone: () => setSpeakIdx(-1),
+        })
+      }
+
+    } catch (e) {
+      console.error('Streaming error:', e)
+      setError('⚠️ Could not reach Curalink backend. Make sure the server is running on port 5000.')
+      setMessages(prev => prev.filter(m => m.id !== streamId))
+    } finally {
+      setLoading(false)
+      setTimeout(() => inputRef.current?.focus(), 100)
+    }
+  }, [input, loading, sessionId, patientCtx, audioOn, voiceRate, voicePitch, voice])
+
+  useEffect(() => { sendRef.current = send }, [send])
+
+  const handleStop  = () => { voice.stopSpeaking(); setSpeakIdx(-1) }
+  const handleClear = () => { setMessages([]); handleStop() }
+  const toggleAudio = () => { setAudioOn(a => !a); if (voice.isSpeaking) handleStop() }
+
+  // ── Keyboard shortcuts ─────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e) => {
+      // Ctrl/Cmd + L = clear conversation
+      if ((e.ctrlKey || e.metaKey) && e.key === 'l') { e.preventDefault(); if (messages.length) handleClear() }
+      // Ctrl/Cmd + E = export conversation
+      if ((e.ctrlKey || e.metaKey) && e.key === 'e') { e.preventDefault(); if (messages.length) exportConversation(messages) }
+      // Escape = close panels
+      if (e.key === 'Escape') { setShowVoiceSettings(false); setShowThemes(false); setShowWidgets(false); setShowSidebar(false) }
+      // Ctrl/Cmd + / = focus input
+      if ((e.ctrlKey || e.metaKey) && e.key === '/') { e.preventDefault(); inputRef.current?.focus() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [messages, handleClear])
+
+  // ── Welcome voice greeting ──────────────────────────────────────
+  const handleVoiceStart = useCallback(() => {
+    if (!voice.isSTTSupported) return
+    voice.speak('Hello! I am Curalink, your AI medical research companion. Tap the mic and ask me anything about symptoms, treatments, or clinical trials.', {
+      rate:   voiceRate,
+      pitch:  voicePitch,
+      force:  true,
+      onDone: () => setTimeout(() => voice.startListening(), 400),
+    })
+  }, [voice, voiceRate, voicePitch])
+
+  const speaking  = voice.isSpeaking
+  const listening = voice.isListening
+
+  // ─────────────────────────────────────────────────────────────
+  // SIDEBAR inner content (shared by desktop + mobile drawer)
+  // ─────────────────────────────────────────────────────────────
+  const SidebarContent = ({ onAction }) => (
+    <>
+      {/* Logo */}
+      <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid var(--glass-border)', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <motion.div whileHover={{ rotate: 10 }}
+            style={{ width: 40, height: 40, borderRadius: 14, background: 'linear-gradient(135deg,#7c6dfa,#22d3ee)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22,
+              boxShadow: '0 4px 20px rgba(124,109,250,0.4)', flexShrink: 0 }}>⚕️</motion.div>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: '0.95rem', letterSpacing: '-0.03em',
+              background: 'linear-gradient(135deg, var(--text-primary), var(--accent-tertiary))',
+              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Curalink</div>
+            <div style={{ fontSize: '0.62rem', color: 'var(--text-tertiary)' }}>AI Medical Research</div>
+          </div>
+          <button onClick={() => navigate('/')}
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1rem', opacity: 0.6 }}>🏠</button>
+        </div>
+      </div>
+
+      {/* Voice status card */}
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--glass-border)', flexShrink: 0 }}>
+        <div style={{ fontSize: '0.62rem', color: 'var(--text-tertiary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>🎙️ Voice Assistant</div>
+        <div style={{ padding: '10px 12px', borderRadius: 12, background: 'var(--glass-bg)', border: '1px solid var(--glass-border)' }}>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: 4 }}>
+            {voice.isSTTSupported ? '✅ Speech recognition ready' : '⚠️ STT not supported in this browser'}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+            {voice.isTTSSupported ? `✅ ${voice.availableVoices.length} voices loaded` : '⚠️ TTS not supported'}
+          </div>
+          {voice.permissionState === 'denied' && (
+            <div style={{ fontSize: '0.72rem', color: '#fda4af', marginTop: 4 }}>🚫 Mic blocked — check browser settings</div>
+          )}
+          {voice.permissionState === 'granted' && (
+            <div style={{ fontSize: '0.72rem', color: '#6ee7b7', marginTop: 4 }}>🎤 Mic permission granted</div>
+          )}
+        </div>
+      </div>
+
+      {/* Quick ask */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px' }}>
+        <div style={{ fontSize: '0.62rem', color: 'var(--text-tertiary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>💡 Quick Ask</div>
+        {SUGGESTIONS.map(s => (
+          <motion.button key={s.text} whileHover={{ x: 4 }} whileTap={{ scale: 0.98 }}
+            onClick={() => { send(s.text); onAction?.() }} disabled={loading}
+            style={{ width: '100%', padding: '7px 10px', marginBottom: 4, borderRadius: 10, border: 'none',
+              cursor: 'pointer', background: 'var(--glass-bg)', textAlign: 'left', fontSize: '0.73rem',
+              lineHeight: 1.4, color: 'var(--text-secondary)', display: 'flex', alignItems: 'flex-start',
+              gap: 7, transition: 'all 0.15s', opacity: loading ? 0.5 : 1 }}
+            onMouseEnter={e => { e.currentTarget.style.borderLeft = `3px solid ${s.color}`; e.currentTarget.style.background = 'var(--glass-bg-hover)' }}
+            onMouseLeave={e => { e.currentTarget.style.borderLeft = 'none'; e.currentTarget.style.background = 'var(--glass-bg)' }}>
+            <span style={{ fontSize: '0.9rem', flexShrink: 0 }}>{s.icon}</span>
+            <span>{s.text}</span>
+          </motion.button>
+        ))}
+        {messages.length > 0 && (
+          <motion.button whileTap={{ scale: 0.97 }} onClick={() => { handleClear(); onAction?.() }}
+            style={{ width: '100%', marginTop: 8, padding: '7px', borderRadius: 9, fontSize: '0.72rem',
+              cursor: 'pointer', background: 'rgba(251,113,133,0.07)', border: '1px solid rgba(251,113,133,0.15)', color: '#fda4af' }}>
+            🗑️ Clear conversation
+          </motion.button>
+        )}
+      </div>
+    </>
+  )
+
+  // ─────────────────────────────────────────────────────────────
+  return (
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'Inter', sans-serif" }}>
+      <Particles />
+
+      {/* ── Mobile overlay backdrop ────────────────────────────── */}
+      <AnimatePresence>
+        {showSidebar && (
+          <motion.div key="mob-bg"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setShowSidebar(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ── DESKTOP SIDEBAR ───────────────────────────────────── */}
+      <aside id="cura-sidebar" style={{
+        width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column',
+        background: 'var(--sidebar-bg)', backdropFilter: 'blur(40px)',
+        borderRight: '1px solid var(--glass-border)', zIndex: 10, position: 'relative'
+      }}>
+        <SidebarContent />
+      </aside>
+
+      {/* ── MOBILE SIDEBAR DRAWER ─────────────────────────────── */}
+      <AnimatePresence>
+        {showSidebar && (
+          <motion.div id="mob-sidebar"
+            key="mob-sidebar"
+            initial={{ x: -280 }} animate={{ x: 0 }} exit={{ x: -280 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 32 }}
+            style={{ position: 'fixed', top: 0, left: 0, height: '100vh', zIndex: 120,
+              width: 260, display: 'flex', flexDirection: 'column',
+              background: 'var(--sidebar-bg)', backdropFilter: 'blur(40px)',
+              borderRight: '1px solid var(--glass-border)' }}>
+            {/* Close button row */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 12px', borderBottom: '1px solid var(--glass-border)' }}>
+              <button onClick={() => setShowSidebar(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.3rem', color: 'var(--text-tertiary)' }}>✕</button>
+            </div>
+            <SidebarContent onAction={() => setShowSidebar(false)} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── MAIN ──────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', zIndex: 5 }}>
+
+        {/* TOP BAR */}
+        <div id="cura-topbar" style={{
+          background: 'var(--topbar-bg)', backdropFilter: 'blur(40px)',
+          borderBottom: '1px solid var(--glass-border)',
+          padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0
+        }}>
+          {/* Hamburger — mobile only */}
+          <button id="hamburger-btn" className="hamburger-btn"
+            onClick={() => setShowSidebar(s => !s)}
+            style={{ padding: '5px 9px', borderRadius: 8, border: '1px solid var(--glass-border)',
+              background: 'var(--glass-bg)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.1rem' }}>
+            ☰
+          </button>
+
+          {/* Live status */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <motion.div animate={{ scale: [1, 1.15, 1] }} transition={{ duration: 2, repeat: Infinity }}
+              style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 8px #22c55e' }} />
+            <span style={{ fontSize: '0.73rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+              Live — PubMed · OpenAlex · ClinicalTrials
+            </span>
+          </div>
+
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* Speaking/Listening badge */}
+            <AnimatePresence>
+              {speaking && (
+                <motion.div key="sp" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }}
+                  onClick={handleStop}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderRadius: 100,
+                    background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', cursor: 'pointer' }}>
+                  <Waveform bars={5} height={14} color="#67e8f9" />
+                  <span style={{ fontSize: '0.68rem', color: '#67e8f9', fontWeight: 600 }}>Speaking — tap to stop</span>
+                </motion.div>
+              )}
+              {listening && (
+                <motion.div key="li" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderRadius: 100,
+                    background: 'rgba(251,113,133,0.10)', border: '1px solid rgba(251,113,133,0.28)' }}>
+                  <motion.div animate={{ scale: [1, 1.4, 1] }} transition={{ duration: 0.7, repeat: Infinity }}
+                    style={{ width: 7, height: 7, borderRadius: '50%', background: '#fb7185' }} />
+                  <span style={{ fontSize: '0.68rem', color: '#fda4af', fontWeight: 600 }}>Listening...</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Theme picker */}
+            <div style={{ position: 'relative' }}>
+              <motion.button id="theme-toggle" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
+                onClick={() => setShowThemes(s => !s)}
+                style={{ padding: '5px 12px', borderRadius: 9, border: `1px solid ${showThemes ? 'rgba(124,109,250,0.4)' : 'var(--glass-border)'}`,
+                  background: showThemes ? 'rgba(124,109,250,0.15)' : 'var(--glass-bg)',
+                  color: showThemes ? 'var(--accent-tertiary)' : 'var(--text-tertiary)', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600 }}>
+                {THEMES.find(t => t.id === theme)?.icon} Theme
+              </motion.button>
+              <AnimatePresence>
+                {showThemes && (
+                  <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }}
+                    style={{ position: 'absolute', top: '110%', right: 0, background: 'var(--sidebar-bg)',
+                      border: '1px solid var(--glass-border)', borderRadius: 14, padding: 8,
+                      zIndex: 100, minWidth: 140, boxShadow: '0 16px 40px rgba(0,0,0,0.6)' }}>
+                    {THEMES.map(t => (
+                      <button key={t.id} onClick={() => { setTheme(t.id); setShowThemes(false) }}
+                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '7px 12px',
+                          borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: '0.8rem',
+                          background: theme === t.id ? 'rgba(124,109,250,0.20)' : 'transparent',
+                          color: theme === t.id ? 'var(--accent-tertiary)' : 'var(--text-secondary)' }}>
+                        {t.label}
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Voice settings */}
+            <motion.button id="voice-settings-btn" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
+              onClick={() => setShowVoiceSettings(s => !s)}
+              style={{ padding: '5px 12px', borderRadius: 9,
+                border: `1px solid ${showVoiceSettings ? 'rgba(124,109,250,0.40)' : 'var(--glass-border)'}`,
+                background: showVoiceSettings ? 'rgba(124,109,250,0.15)' : 'var(--glass-bg)',
+                color: showVoiceSettings ? 'var(--accent-tertiary)' : 'var(--text-tertiary)',
+                cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600 }}>
+              ⚙️ Voice
+            </motion.button>
+
+            {/* Widget panel toggle */}
+            <motion.button id="widget-panel-btn" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
+              onClick={() => setShowWidgets(s => !s)}
+              style={{ padding: '5px 12px', borderRadius: 9,
+                border: `1px solid ${showWidgets ? 'rgba(52,211,153,0.40)' : 'var(--glass-border)'}`,
+                background: showWidgets ? 'rgba(52,211,153,0.12)' : 'var(--glass-bg)',
+                color: showWidgets ? '#6ee7b7' : 'var(--text-tertiary)',
+                cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600,
+                position: 'relative' }}>
+              🏥 Widgets
+              {lastStats && (
+                <motion.span initial={{ scale: 0 }} animate={{ scale: 1 }}
+                  style={{ position: 'absolute', top: -5, right: -5, width: 8, height: 8,
+                    borderRadius: '50%', background: '#34d399', border: '1.5px solid var(--topbar-bg)' }} />
+              )}
+            </motion.button>
+
+            {/* Audio toggle */}
+            <motion.button id="audio-toggle" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
+              onClick={toggleAudio}
+              style={{ padding: '5px 12px', borderRadius: 9, border: '1px solid var(--glass-border)',
+                background: audioOn ? 'rgba(34,211,238,0.10)' : 'var(--glass-bg)',
+                color: audioOn ? '#67e8f9' : 'var(--text-tertiary)',
+                cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600 }}>
+              {audioOn ? '🔊 ON' : '🔇 OFF'}
+            </motion.button>
+          </div>
+        </div>
+
+        {/* Voice Settings panel */}
+        <AnimatePresence>
+          {showVoiceSettings && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              style={{ position: 'absolute', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center',
+                justifyContent: 'center', padding: 24, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(6px)' }}
+              onClick={e => { if (e.target === e.currentTarget) setShowVoiceSettings(false) }}>
+              <VoiceSettings
+                voice={voice} rate={voiceRate} pitch={voicePitch}
+                onRateChange={setVoiceRate} onPitchChange={setVoicePitch}
+                onClose={() => setShowVoiceSettings(false)}
+                currentLang="en-US"
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Widget Panel */}
+        <WidgetPanel
+          isOpen={showWidgets}
+          onClose={() => setShowWidgets(false)}
+          stats={lastStats}
+          onSymptom={(q) => { send(q); setShowWidgets(false) }}
+        />
+
+        {/* ── MESSAGE AREA ──────────────────────────────────────── */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
+
+          {/* Welcome screen */}
+          {messages.length === 0 && (
+            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}
+              style={{ textAlign: 'center', paddingTop: 40 }}>
+
+              <motion.div
+                animate={{ scale: [1, 1.04, 1], boxShadow: ['0 0 40px rgba(124,109,250,0.3)', '0 0 70px rgba(124,109,250,0.6)', '0 0 40px rgba(124,109,250,0.3)'] }}
+                transition={{ duration: 2.5, repeat: Infinity }}
+                style={{ width: 110, height: 110, borderRadius: 32, margin: '0 auto 24px',
+                  background: 'linear-gradient(135deg,#7c6dfa,#22d3ee)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 56 }}>
+                ⚕️
+              </motion.div>
+
+              <motion.h1 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+                style={{ fontSize: '2rem', fontWeight: 800, marginBottom: 10, letterSpacing: '-0.04em',
+                  background: 'linear-gradient(135deg, var(--text-primary) 40%, var(--accent-tertiary))',
+                  WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                🙏 Namaste!
+              </motion.h1>
+
+              <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}
+                style={{ maxWidth: 440, margin: '0 auto 28px', color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.8 }}>
+                I'm <strong style={{ color: 'var(--text-primary)' }}>Curalink</strong> — your AI medical research companion.<br />
+                {voice.isSTTSupported
+                  ? 'Tap the mic to speak, or type your question below.'
+                  : 'Type your medical question below to get started.'}
+              </motion.p>
+
+              {/* Mic section */}
+              {voice.isSTTSupported && (
+                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
+                  style={{ marginBottom: 32 }}>
+                  <PermissionNotice state={voice.permissionState} />
+                  {speaking ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                      <Waveform bars={14} height={48} color="#7c6dfa" />
+                      <p style={{ fontSize: '0.82rem', color: '#a78bfa', fontWeight: 600 }}>Curalink is speaking...</p>
+                      <motion.button whileTap={{ scale: 0.93 }} onClick={handleStop}
+                        style={{ padding: '7px 20px', borderRadius: 100, fontSize: '0.78rem', cursor: 'pointer',
+                          background: 'var(--glass-bg)', border: '1px solid rgba(124,109,250,0.4)', color: 'var(--accent-tertiary)' }}>
+                        Stop Speaking
+                      </motion.button>
+                    </div>
+                  ) : listening ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                      <div style={{ position: 'relative', width: 80, height: 80 }}>
+                        {[1, 1.4, 1.8].map((s, i) => (
+                          <motion.div key={i} animate={{ scale: [s, s + 0.3, s], opacity: [0.5, 0, 0.5] }}
+                            transition={{ duration: 1.6, repeat: Infinity, delay: i * 0.45 }}
+                            style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid #7c6dfa' }} />
+                        ))}
+                        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'rgba(124,109,250,0.15)',
+                          border: '2px solid rgba(124,109,250,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32 }}>🎙️</div>
+                      </div>
+                      <p style={{ fontSize: '0.82rem', color: '#a78bfa', fontWeight: 600 }}>Listening in English...</p>
+                      {interim && <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontStyle: 'italic', maxWidth: 300, textAlign: 'center' }}>"{interim}"</p>}
+                      <motion.button whileTap={{ scale: 0.93 }} onClick={() => voice.stopListening()}
+                        style={{ padding: '7px 20px', borderRadius: 100, fontSize: '0.78rem', cursor: 'pointer',
+                          background: 'var(--glass-bg)', border: '1px solid rgba(124,109,250,0.4)', color: 'var(--accent-tertiary)' }}>
+                        Stop Listening
+                      </motion.button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+                      <motion.button
+                        whileHover={{ scale: 1.08, boxShadow: '0 0 40px rgba(124,109,250,0.60)' }}
+                        whileTap={{ scale: 0.93 }}
+                        onClick={handleVoiceStart}
+                        style={{ width: 84, height: 84, borderRadius: '50%', border: 'none', cursor: 'pointer',
+                          background: 'linear-gradient(135deg, rgba(124,109,250,0.30), rgba(124,109,250,0.15))',
+                          outline: '2px solid rgba(124,109,250,0.55)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 36, boxShadow: '0 8px 32px rgba(124,109,250,0.28)' }}>
+                        🎙️
+                      </motion.button>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>Tap to hear greeting & start talking</span>
+                    </div>
+                  )}
+                </motion.div>
+              )}
+
+              {/* Suggestion chips */}
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.55 }}>
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-tertiary)', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 12 }}>Popular Questions</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', maxWidth: 580, margin: '0 auto' }}>
+                  {SUGGESTIONS.map((s, i) => (
+                    <motion.button key={s.text}
+                      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 + i * 0.07 }}
+                      whileHover={{ scale: 1.05, y: -2 }} whileTap={{ scale: 0.96 }}
+                      onClick={() => send(s.text)}
+                      style={{ padding: '9px 16px', borderRadius: 100, border: 'none', cursor: 'pointer',
+                        fontSize: '0.82rem', fontWeight: 500, background: 'var(--glass-bg)',
+                        outline: `1px solid ${s.color}25`, color: 'var(--text-secondary)',
+                        display: 'flex', gap: 7, alignItems: 'center', transition: 'all 0.2s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = `${s.color}15`; e.currentTarget.style.color = 'var(--text-primary)' }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'var(--glass-bg)'; e.currentTarget.style.color = 'var(--text-secondary)' }}>
+                      {s.icon}{s.text}
+                    </motion.button>
+                  ))}
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+
+          {/* Messages */}
+          <AnimatePresence>
+            {messages.map((msg, i) => (
+              <Bubble key={i} msg={msg} speaking={speakIdx === i && speaking} />
+            ))}
+          </AnimatePresence>
+          {loading && <Typing />}
+
+          {/* Error */}
+          {error && (
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+              style={{ padding: '14px 18px', borderRadius: 14, marginBottom: 16,
+                background: 'rgba(251,113,133,0.08)', border: '1px solid rgba(251,113,133,0.25)' }}>
+              <p style={{ margin: 0, color: '#fda4af', fontSize: '0.86rem' }}>{error}</p>
+            </motion.div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* ── INPUT BAR ─────────────────────────────────────────── */}
+        <div id="cura-inputbar" style={{
+          background: 'var(--inputbar-bg)', backdropFilter: 'blur(40px)',
+          borderTop: '1px solid var(--glass-border)',
+          padding: '14px 22px', flexShrink: 0
+        }}>
+          {/* Interim transcript */}
+          <AnimatePresence>
+            {interim && (
+              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+                style={{ fontSize: '0.78rem', color: '#fda4af', marginBottom: 8, paddingLeft: 4, fontStyle: 'italic' }}>
+                🎙️ "{interim}"
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1, position: 'relative' }}>
+              <textarea id="chat-input" ref={inputRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+                placeholder="Ask about symptoms, treatments, clinical trials…"
+                disabled={loading}
+                rows={1}
+                style={{ resize: 'none', width: '100%', boxSizing: 'border-box', padding: '13px 16px',
+                  borderRadius: 16, fontSize: '0.92rem', lineHeight: 1.6, maxHeight: 120, overflowY: 'auto',
+                  background: 'var(--glass-bg)',
+                  border: `1px solid ${input.trim() ? 'rgba(124,109,250,0.4)' : 'var(--glass-border)'}`,
+                  color: 'var(--text-primary)', outline: 'none', transition: 'border-color 0.2s', fontFamily: 'inherit' }}
+                onInput={e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px' }}
+              />
+            </div>
+
+            {/* Mic button */}
+            {voice.isSTTSupported && (
+              <motion.button whileHover={{ scale: 1.07 }} whileTap={{ scale: 0.92 }}
+                onClick={listening ? () => voice.stopListening() : speaking ? handleStop : () => voice.startListening()}
+                className="btn-icon"
+                style={listening
+                  ? { background: 'linear-gradient(135deg,#fb7185,#f43f5e)', borderColor: 'transparent', boxShadow: '0 0 20px rgba(251,113,133,0.5)' }
+                  : speaking
+                    ? { background: 'linear-gradient(135deg,#7c6dfa,#a78bfa)', borderColor: 'transparent' }
+                    : {}}>
+                {listening ? '🎙️' : speaking ? '🔊' : '🎙️'}
+              </motion.button>
+            )}
+
+            {/* Send button */}
+            <motion.button id="send-btn" className="btn-icon"
+              whileHover={{ scale: 1.07 }} whileTap={{ scale: 0.92 }}
+              onClick={() => send()} disabled={!input.trim() || loading}
+              style={{ background: input.trim() && !loading ? 'linear-gradient(135deg,#7c6dfa,#22d3ee)' : 'var(--glass-bg)', borderColor: 'transparent', transition: 'all 0.2s' }}>
+              {loading
+                ? <div className="spinner" />
+                : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
+              }
+            </motion.button>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: '0.65rem', color: 'var(--text-tertiary)', flexWrap: 'wrap', gap: 4 }}>
+            <span style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <span>↵ Send</span>
+              <span>⌘L Clear</span>
+              <span>⌘E Export</span>
+              {messages.length > 0 && (
+                <motion.button
+                  whileTap={{ scale: 0.94 }}
+                  onClick={() => exportConversation(messages)}
+                  style={{ background: 'rgba(124,109,250,0.10)', border: '1px solid rgba(124,109,250,0.25)',
+                    color: 'var(--accent-tertiary)', borderRadius: 6, padding: '1px 8px', cursor: 'pointer',
+                    fontSize: '0.62rem', fontWeight: 600, fontFamily: 'inherit' }}>
+                  ⬇️ Export
+                </motion.button>
+              )}
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {input.length > 0 && (
+                <span style={{ color: input.length > 500 ? '#fb7185' : 'var(--text-tertiary)' }}>{input.length}/1000</span>
+              )}
+              <span style={{ color: 'var(--accent-primary)', fontWeight: 600 }}>🌐 English</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
